@@ -1,9 +1,11 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import classNames from 'classnames';
+
 import { Header } from './components/header';
 import { TodoList } from './components/todolist';
 import { Footer } from './components/footer';
 import { ErrorNotification } from './components/error';
+
 import {
   USER_ID,
   getTodos,
@@ -11,6 +13,7 @@ import {
   deleteTodo,
   updateTodo,
 } from './api/todos';
+
 import { Todo } from './types/todo';
 import { FilterType } from './enums/filter';
 
@@ -19,36 +22,51 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>(FilterType.All);
-  const [newTitle, setNewTitle] = useState('');
-  const [tempTodo, setTempTodo] = useState<Todo | null>(null);
+
   const [savingIds, setSavingIds] = useState<number[]>([]);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editingTitle, setEditingTitle] = useState('');
+  const [tempTodo, setTempTodo] = useState<Todo | null>(null);
+
   const inputRef = useRef<HTMLInputElement>(null);
-  const errorTimeoutRef = useRef<number>();
+
+  // авто-скрытие ошибки через 3 сек
+  const hideErrorTimer = useRef<number | null>(null);
+
+  const clearError = useCallback(() => {
+    if (hideErrorTimer.current !== null) {
+      window.clearTimeout(hideErrorTimer.current);
+      hideErrorTimer.current = null;
+    }
+
+    setErrorMsg(null);
+  }, []);
 
   const showError = useCallback((msg: string) => {
-    clearTimeout(errorTimeoutRef.current);
-    setErrorMsg(null);
-    setTimeout(() => setErrorMsg(msg), 0);
-    errorTimeoutRef.current = window.setTimeout(() => {
+    setErrorMsg(msg);
+    if (hideErrorTimer.current !== null) {
+      window.clearTimeout(hideErrorTimer.current);
+    }
+
+    hideErrorTimer.current = window.setTimeout(() => {
       setErrorMsg(null);
-      setTempTodo(null);
+      hideErrorTimer.current = null;
     }, 3000);
   }, []);
 
-  const clearError = useCallback(() => {
-    clearTimeout(errorTimeoutRef.current);
-    setErrorMsg(null);
+  useEffect(() => {
+    return () => {
+      if (hideErrorTimer.current !== null) {
+        window.clearTimeout(hideErrorTimer.current);
+      }
+    };
   }, []);
 
   const loadTodos = useCallback(async () => {
-    clearError();
     setLoading(true);
+    clearError();
     try {
-      const response = await getTodos();
+      const data = await getTodos(); // без аргумента
 
-      setTodos(response);
+      setTodos(data);
     } catch {
       showError('Unable to load todos');
     } finally {
@@ -64,313 +82,272 @@ export const App: React.FC = () => {
     inputRef.current?.focus();
   }, [loadTodos]);
 
+  // снимаем tempTodo, когда он появился в основном списке
   useEffect(() => {
-    if (!tempTodo && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [tempTodo]);
-
-  const handleAddTodo = async (title: string) => {
-    const trimmedTitle = title.trim();
-
-    if (!trimmedTitle) {
-      showError('Title should not be empty');
-
+    if (!tempTodo) {
       return;
     }
 
-    setTempTodo({
+    const exists = todos.some(t => t.id === tempTodo.id);
+
+    if (exists) {
+      setTempTodo(null);
+    }
+  }, [todos, tempTodo]);
+
+  // фильтрация
+  const filteredTodos = todos.filter(todo => {
+    switch (filter) {
+      case FilterType.Active:
+        return !todo.completed;
+      case FilterType.Completed:
+        return todo.completed;
+      default:
+        return true;
+    }
+  });
+
+  const activeCount = todos.filter(t => !t.completed).length;
+  const completedCount = todos.length - activeCount;
+  const hasTodos = todos.length > 0;
+  const allCompleted = hasTodos && todos.every(t => t.completed);
+
+  // Добавление новой задачи — возвращаем успех/провал
+  const handleAddTodo = async (title: string): Promise<boolean> => {
+    const trimmed = title.trim();
+
+    if (!trimmed) {
+      showError('Title should not be empty');
+
+      return false;
+    }
+
+    clearError();
+
+    const optimisticTodo: Todo = {
       id: 0,
       userId: USER_ID,
-      title: trimmedTitle,
+      title: trimmed,
       completed: false,
-    });
-    setLoading(true);
+    };
+
+    setTempTodo(optimisticTodo);
 
     try {
-      const newTodo = await addTodo(trimmedTitle);
+      const created = await addTodo(trimmed); // строка, не объект
 
-      setTodos(prev => [...prev, newTodo]);
-      setNewTitle('');
-      setTempTodo(null);
-      inputRef.current?.focus();
+      // кладём в конец, чтобы занять место tempTodo
+      setTodos(prev => [...prev, created]);
+
+      return true;
     } catch {
       showError('Unable to add a todo');
+
+      return false;
     } finally {
-      setLoading(false);
+      setTempTodo(null);
     }
-  };
-
-  const handleRemoveTodo = async (id: number) => {
-    clearError();
-    setSavingIds(ids => [...ids, id]);
-    try {
-      await deleteTodo(id);
-      setTodos(prev => prev.filter(t => t.id !== id));
-      inputRef.current?.focus();
-    } catch {
-      showError('Unable to delete a todo');
-      throw new Error();
-    } finally {
-      setSavingIds(ids => ids.filter(i => i !== id));
-    }
-  };
-
-  const handleClearCompleted = async () => {
-    clearError();
-    const completedIds = todos
-      .filter(todo => todo.completed)
-      .map(todo => todo.id);
-
-    setSavingIds(ids => [...ids, ...completedIds]);
-
-    const results = await Promise.allSettled(
-      completedIds.map(id => deleteTodo(id)),
-    );
-
-    let hasFailed = false;
-
-    const successfulIds = completedIds.filter((_, index) => {
-      const success = results[index].status === 'fulfilled';
-
-      if (!success) {
-        hasFailed = true;
-      }
-
-      return success;
-    });
-
-    if (hasFailed) {
-      showError('Unable to delete a todo');
-    }
-
-    if (successfulIds.length > 0) {
-      setTodos(prev => prev.filter(todo => !successfulIds.includes(todo.id)));
-    }
-
-    setSavingIds(ids => ids.filter(id => !completedIds.includes(id)));
-
-    inputRef.current?.focus();
   };
 
   const handleToggleTodo = async (todo: Todo) => {
     clearError();
     setSavingIds(ids => [...ids, todo.id]);
-
     try {
-      const updatedTodo = await updateTodo({
-        ...todo,
-        completed: !todo.completed,
-      });
+      const updated = await updateTodo({ ...todo, completed: !todo.completed });
 
-      setTodos(prev => prev.map(t => (t.id === todo.id ? updatedTodo : t)));
+      setTodos(prev => prev.map(t => (t.id === todo.id ? updated : t)));
     } catch {
       showError('Unable to update a todo');
     } finally {
       setSavingIds(ids => ids.filter(id => id !== todo.id));
+    }
+  };
+
+  // Удаление одной задачи — возвращаем успех/провал и фокусим поле
+  const handleRemoveTodo = async (id: number): Promise<boolean> => {
+    clearError();
+    setSavingIds(ids => [...ids, id]);
+
+    try {
+      await deleteTodo(id);
+      setTodos(prev => prev.filter(t => t.id !== id));
+      inputRef.current?.focus();
+
+      return true;
+    } catch {
+      showError('Unable to delete a todo');
+
+      return false;
+    } finally {
+      setSavingIds(ids => ids.filter(x => x !== id));
+    }
+  };
+
+  // Обновление заголовка для редактирования — возвращаем успех/провал
+  const handleUpdateTitle = async (
+    id: number,
+    nextTitle: string,
+  ): Promise<boolean> => {
+    const todo = todos.find(t => t.id === id);
+
+    if (!todo) {
+      return false;
+    }
+
+    const trimmed = nextTitle.trim();
+
+    if (trimmed === '') {
+      // пустой => удалить
+      const ok = await handleRemoveTodo(id);
+
+      return ok;
+    }
+
+    if (trimmed === todo.title) {
+      // нет изменений — считаем успехом (закрыть редактирование)
+      return true;
+    }
+
+    clearError();
+    setSavingIds(ids => [...ids, id]);
+
+    try {
+      const updated = await updateTodo({ ...todo, title: trimmed });
+
+      setTodos(prev => prev.map(t => (t.id === id ? updated : t)));
+
+      return true;
+    } catch {
+      showError('Unable to update a todo');
+
+      return false;
+    } finally {
+      setSavingIds(ids => ids.filter(x => x !== id));
     }
   };
 
   const handleToggleAll = async () => {
-    clearError();
-
-    const allCompleted =
-      todos.length > 0 && todos.every(todo => todo.completed);
-    const newStatus = !allCompleted;
-
-    const todosToUpdate = todos.filter(todo => todo.completed !== newStatus);
-
-    if (todosToUpdate.length === 0) {
+    if (todos.length === 0) {
       return;
-    }
-
-    setSavingIds(ids => [...ids, ...todosToUpdate.map(t => t.id)]);
-
-    const results = await Promise.allSettled(
-      todosToUpdate.map(todo => updateTodo({ ...todo, completed: newStatus })),
-    );
-
-    let hasFailed = false;
-
-    const updatedTodos = todos.map(todo => {
-      const index = todosToUpdate.findIndex(t => t.id === todo.id);
-      const result = results[index];
-
-      if (index !== -1 && result.status === 'fulfilled') {
-        return result.value;
-      }
-
-      if (index !== -1 && result.status === 'rejected') {
-        hasFailed = true;
-      }
-
-      return todo;
-    });
-
-    if (hasFailed) {
-      showError('Unable to update a todo');
-    }
-
-    setTodos(updatedTodos);
-    setSavingIds(ids =>
-      ids.filter(id => !todosToUpdate.some(todo => todo.id === id)),
-    );
-  };
-
-  const handleSaveEdit = async () => {
-    if (editingId === null) {
-      return;
-    }
-
-    const todo = todos.find(t => t.id === editingId);
-
-    if (!todo) {
-      return;
-    }
-
-    const trimmedTitle = editingTitle.trim();
-
-    if (trimmedTitle === '') {
-      clearError();
-      setSavingIds(ids => [...ids, todo.id]);
-
-      let deleteSucceeded = false;
-
-      try {
-        await handleRemoveTodo(todo.id);
-        deleteSucceeded = true;
-      } catch {
-        showError('Unable to delete a todo');
-      } finally {
-        setSavingIds(ids => ids.filter(id => id !== todo.id));
-      }
-
-      if (deleteSucceeded) {
-        setEditingId(null);
-      }
-
-      return;
-    }
-
-    if (trimmedTitle === todo.title) {
-      setEditingId(null);
-
-      return; // ничего не менялось
     }
 
     clearError();
-    setSavingIds(ids => [...ids, todo.id]);
+
+    const shouldCompleteAll = todos.some(t => !t.completed);
+
+    const prevTodos = todos;
+
+    setTodos(prev => prev.map(t => ({ ...t, completed: shouldCompleteAll })));
+    setLoading(true);
 
     try {
-      const updated = await updateTodo({ ...todo, title: trimmedTitle });
-
-      setTodos(prev => prev.map(t => (t.id === todo.id ? updated : t)));
-      setEditingId(null);
+      for (const t of prevTodos) {
+        if (t.completed !== shouldCompleteAll) {
+          await updateTodo({ ...t, completed: shouldCompleteAll });
+        }
+      }
     } catch {
-      showError('Unable to update a todo');
+      setTodos(prevTodos);
+      showError('Unable to toggle all todos');
     } finally {
-      setSavingIds(ids => ids.filter(id => id !== todo.id));
+      setLoading(false);
     }
   };
 
-  const handleCancelEdit = () => {
-    if (editingId === null) {
+  // Групповое удаление завершённых — параллельно, показываем нужный текст ошибки и возвращаем фокус
+  const handleClearCompleted = async () => {
+    clearError();
+    const completed = todos.filter(t => t.completed);
+
+    if (completed.length === 0) {
       return;
     }
 
-    const original = todos.find(t => t.id === editingId);
+    setLoading(true);
 
-    if (!original) {
-      return;
+    const prevTodos = todos;
+
+    // оптимистично скрываем завершённые
+    setTodos(prev => prev.filter(t => !t.completed));
+
+    try {
+      const results = await Promise.allSettled(
+        completed.map(t => deleteTodo(t.id)),
+      );
+
+      const statusById = new Map<number, 'fulfilled' | 'rejected'>();
+
+      results.forEach((res, i) => {
+        statusById.set(completed[i].id, res.status);
+      });
+
+      const hasFail = results.some(r => r.status === 'rejected');
+
+      if (hasFail) {
+        // в списке остаются только те completed, которые НЕ удалились
+        setTodos(() =>
+          prevTodos.filter(
+            t => !(t.completed && statusById.get(t.id) === 'fulfilled'),
+          ),
+        );
+        // текст ошибки должен совпасть с ожиданием теста
+        showError('Unable to delete a todo');
+      }
+    } finally {
+      setLoading(false);
+      // вернуть фокус после скрытия оверлея
+      setTimeout(() => inputRef.current?.focus(), 0);
     }
-
-    setEditingTitle(original.title); // сбросить на старый
-    setEditingId(null); // выйти из режима редактирования
   };
-
-  const filteredTodos = todos.filter(todo => {
-    if (filter === FilterType.Active) {
-      return !todo.completed;
-    }
-
-    if (filter === FilterType.Completed) {
-      return todo.completed;
-    }
-
-    return true;
-  });
-
-  const completedCount = todos.filter(t => t.completed).length;
-  const activeCount = todos.length - completedCount;
 
   return (
     <div className="todoapp">
-      {!USER_ID ? (
-        <div>Please register user first</div>
-      ) : (
-        <>
-          <h1 className="todoapp__title">todos</h1>
+      <h1 className="todoapp__title">todos</h1>
 
-          <div className="todoapp__content">
-            <Header
-              todos={todos}
-              loading={loading}
-              allCompleted={
-                todos.length > 0 && todos.every(todo => todo.completed)
-              }
-              onToggleAll={handleToggleAll}
-              newTitle={newTitle}
-              setNewTitle={setNewTitle}
-              onAddTodo={handleAddTodo}
-              clearError={clearError}
-              inputRef={inputRef}
-              disabled={!!tempTodo}
+      <div className="todoapp__content">
+        <Header
+          hasTodos={hasTodos}
+          allCompleted={allCompleted}
+          onToggleAll={handleToggleAll}
+          onAddTodo={handleAddTodo} // Promise<boolean>
+          inputRef={inputRef}
+          disabled={!!tempTodo}
+        />
+
+        {(hasTodos || tempTodo) && (
+          <>
+            <TodoList
+              todos={[...filteredTodos, ...(tempTodo ? [tempTodo] : [])]}
+              savingIds={savingIds}
+              onToggleTodo={handleToggleTodo}
+              onRemoveTodo={handleRemoveTodo}
+              onUpdateTitle={handleUpdateTitle} // Promise<boolean>
+              tempTodoId={tempTodo ? 0 : null}
             />
 
-            {(todos.length > 0 || tempTodo) && (
-              <>
-                <TodoList
-                  todos={[...filteredTodos, ...(tempTodo ? [tempTodo] : [])]}
-                  savingIds={savingIds}
-                  editingId={editingId}
-                  editingTitle={editingTitle}
-                  onToggleTodo={handleToggleTodo}
-                  onRemoveTodo={handleRemoveTodo}
-                  onStartEdit={todo => {
-                    setEditingId(todo.id);
-                    setEditingTitle(todo.title);
-                  }}
-                  onSaveEdit={handleSaveEdit}
-                  onCancelEdit={handleCancelEdit}
-                  setEditingTitle={setEditingTitle}
-                  tempTodoId={tempTodo ? 0 : null}
-                />
+            <Footer
+              activeCount={activeCount}
+              completedCount={completedCount}
+              filter={filter}
+              setFilter={setFilter}
+              onClearCompleted={handleClearCompleted}
+            />
+          </>
+        )}
 
-                <Footer
-                  activeCount={activeCount}
-                  completedCount={completedCount}
-                  filter={filter}
-                  setFilter={setFilter}
-                  onClearCompleted={handleClearCompleted}
-                />
-              </>
-            )}
-          </div>
+        <ErrorNotification
+          errorMsg={errorMsg}
+          onClose={() => setErrorMsg(null)}
+        />
 
-          <ErrorNotification
-            errorMsg={errorMsg}
-            onClose={() => setErrorMsg(null)}
-          />
-
-          <div
-            data-cy="LoadingOverlay"
-            className={classNames('modal overlay', { 'is-active': loading })}
-          >
-            <div className="modal-background has-background-white-ter" />
-            <div className="loader" />
-          </div>
-        </>
-      )}
+        <div
+          data-cy="LoadingOverlay"
+          className={classNames('modal overlay', { 'is-active': loading })}
+        >
+          <div className="modal-background has-background-white-ter" />
+          <div className="loader" />
+        </div>
+      </div>
     </div>
   );
 };

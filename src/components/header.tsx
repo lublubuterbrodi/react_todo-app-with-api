@@ -1,44 +1,48 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import classNames from 'classnames';
-import { Todo } from '../types/todo';
 
 type Props = {
-  todos: Todo[];
-  loading: boolean;
+  hasTodos: boolean;
   allCompleted: boolean;
   onToggleAll: () => void;
-  newTitle: string;
-  setNewTitle: (title: string) => void;
-  onAddTodo: (title: string) => void;
-  clearError: () => void;
+  onAddTodo: (title: string) => Promise<boolean>;
   inputRef: React.RefObject<HTMLInputElement>;
   disabled: boolean;
 };
 
 export const Header: React.FC<Props> = ({
-  todos,
-  loading,
+  hasTodos,
   allCompleted,
   onToggleAll,
-  newTitle,
-  setNewTitle,
   onAddTodo,
-  clearError,
   inputRef,
   disabled,
 }) => {
-  const handleSubmit = (e: React.FormEvent) => {
+  const [newTitle, setNewTitle] = useState('');
+  const wasDisabled = useRef(disabled);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onAddTodo(newTitle);
+    const ok = await onAddTodo(newTitle);
+
+    // очищаем поле только при успехе
+    if (ok) {
+      setNewTitle('');
+    }
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setNewTitle(e.target.value);
-  };
+  // когда disabled меняется true → false (после ответа) → вернуть фокус
+  useEffect(() => {
+    if (wasDisabled.current && !disabled) {
+      inputRef.current?.focus();
+    }
+
+    wasDisabled.current = disabled;
+  }, [disabled, inputRef]);
 
   return (
     <header className="todoapp__header">
-      {todos.length > 0 && !loading && (
+      {hasTodos && (
         <button
           type="button"
           className={classNames('todoapp__toggle-all', {
@@ -57,8 +61,7 @@ export const Header: React.FC<Props> = ({
           className="todoapp__new-todo"
           placeholder="What needs to be done?"
           value={newTitle}
-          onChange={handleChange}
-          onFocus={clearError}
+          onChange={e => setNewTitle(e.target.value)}
           disabled={disabled}
         />
       </form>
