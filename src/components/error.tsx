@@ -7,15 +7,16 @@ type Props = {
 };
 
 export const ErrorNotification: React.FC<Props> = ({ errorMsg, onClose }) => {
+  const hidden = !errorMsg;
+
   return (
     <div
       data-cy="ErrorNotification"
       className={classNames(
         'notification is-danger is-light has-text-weight-normal',
-        {
-          hidden: !errorMsg,
-        },
+        { hidden },
       )}
+      style={{ display: hidden ? 'none' : 'block', marginBottom: 0 }}
     >
       <button
         data-cy="HideErrorButton"
@@ -23,7 +24,7 @@ export const ErrorNotification: React.FC<Props> = ({ errorMsg, onClose }) => {
         className="delete"
         onClick={onClose}
       />
-      {errorMsg || <span>&nbsp;</span>}
+      {errorMsg}
     </div>
   );
 };

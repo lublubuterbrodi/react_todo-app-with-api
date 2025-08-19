@@ -28,7 +28,6 @@ export const App: React.FC = () => {
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // авто-скрытие ошибки через 3 сек
   const hideErrorTimer = useRef<number | null>(null);
 
   const clearError = useCallback(() => {
@@ -64,7 +63,7 @@ export const App: React.FC = () => {
     setLoading(true);
     clearError();
     try {
-      const data = await getTodos(); // без аргумента
+      const data = await getTodos();
 
       setTodos(data);
     } catch {
@@ -82,7 +81,6 @@ export const App: React.FC = () => {
     inputRef.current?.focus();
   }, [loadTodos]);
 
-  // снимаем tempTodo, когда он появился в основном списке
   useEffect(() => {
     if (!tempTodo) {
       return;
@@ -95,7 +93,6 @@ export const App: React.FC = () => {
     }
   }, [todos, tempTodo]);
 
-  // фильтрация
   const filteredTodos = todos.filter(todo => {
     switch (filter) {
       case FilterType.Active:
@@ -112,7 +109,6 @@ export const App: React.FC = () => {
   const hasTodos = todos.length > 0;
   const allCompleted = hasTodos && todos.every(t => t.completed);
 
-  // Добавление новой задачи — возвращаем успех/провал
   const handleAddTodo = async (title: string): Promise<boolean> => {
     const trimmed = title.trim();
 
@@ -134,9 +130,8 @@ export const App: React.FC = () => {
     setTempTodo(optimisticTodo);
 
     try {
-      const created = await addTodo(trimmed); // строка, не объект
+      const created = await addTodo(trimmed);
 
-      // кладём в конец, чтобы занять место tempTodo
       setTodos(prev => [...prev, created]);
 
       return true;
@@ -163,7 +158,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Удаление одной задачи — возвращаем успех/провал и фокусим поле
   const handleRemoveTodo = async (id: number): Promise<boolean> => {
     clearError();
     setSavingIds(ids => [...ids, id]);
@@ -183,7 +177,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Обновление заголовка для редактирования — возвращаем успех/провал
   const handleUpdateTitle = async (
     id: number,
     nextTitle: string,
@@ -197,14 +190,12 @@ export const App: React.FC = () => {
     const trimmed = nextTitle.trim();
 
     if (trimmed === '') {
-      // пустой => удалить
       const ok = await handleRemoveTodo(id);
 
       return ok;
     }
 
     if (trimmed === todo.title) {
-      // нет изменений — считаем успехом (закрыть редактирование)
       return true;
     }
 
@@ -234,70 +225,82 @@ export const App: React.FC = () => {
     clearError();
 
     const shouldCompleteAll = todos.some(t => !t.completed);
+    const toChange = todos.filter(t => t.completed !== shouldCompleteAll);
+
+    if (toChange.length === 0) {
+      return;
+    }
+
+    const ids = toChange.map(t => t.id);
 
     const prevTodos = todos;
 
-    setTodos(prev => prev.map(t => ({ ...t, completed: shouldCompleteAll })));
-    setLoading(true);
+    setTodos(prev =>
+      prev.map(t =>
+        ids.includes(t.id) ? { ...t, completed: shouldCompleteAll } : t,
+      ),
+    );
+    setSavingIds(prev => Array.from(new Set([...prev, ...ids])));
 
-    try {
-      for (const t of prevTodos) {
-        if (t.completed !== shouldCompleteAll) {
-          await updateTodo({ ...t, completed: shouldCompleteAll });
-        }
-      }
-    } catch {
-      setTodos(prevTodos);
-      showError('Unable to toggle all todos');
-    } finally {
-      setLoading(false);
+    const results = await Promise.allSettled(
+      toChange.map(t => updateTodo({ ...t, completed: shouldCompleteAll })),
+    );
+
+    const failedIds = results
+      .map((r, i) => (r.status === 'rejected' ? ids[i] : null))
+      .filter((x): x is number => x !== null);
+
+    if (failedIds.length) {
+      setTodos(prev =>
+        prev.map(t =>
+          failedIds.includes(t.id) ? prevTodos.find(p => p.id === t.id)! : t,
+        ),
+      );
+      showError('Unable to update a todo');
     }
+
+    setSavingIds(prev => prev.filter(id => !ids.includes(id)));
   };
 
-  // Групповое удаление завершённых — параллельно, показываем нужный текст ошибки и возвращаем фокус
   const handleClearCompleted = async () => {
     clearError();
+
     const completed = todos.filter(t => t.completed);
 
     if (completed.length === 0) {
       return;
     }
 
-    setLoading(true);
+    const ids = completed.map(t => t.id);
 
-    const prevTodos = todos;
+    setSavingIds(prev => Array.from(new Set([...prev, ...ids])));
 
-    // оптимистично скрываем завершённые
-    setTodos(prev => prev.filter(t => !t.completed));
+    const results = await Promise.allSettled(
+      completed.map(t => deleteTodo(t.id)),
+    );
 
-    try {
-      const results = await Promise.allSettled(
-        completed.map(t => deleteTodo(t.id)),
-      );
+    const succeededIds: number[] = [];
+    let hasFail = false;
 
-      const statusById = new Map<number, 'fulfilled' | 'rejected'>();
-
-      results.forEach((res, i) => {
-        statusById.set(completed[i].id, res.status);
-      });
-
-      const hasFail = results.some(r => r.status === 'rejected');
-
-      if (hasFail) {
-        // в списке остаются только те completed, которые НЕ удалились
-        setTodos(() =>
-          prevTodos.filter(
-            t => !(t.completed && statusById.get(t.id) === 'fulfilled'),
-          ),
-        );
-        // текст ошибки должен совпасть с ожиданием теста
-        showError('Unable to delete a todo');
+    results.forEach((res, i) => {
+      if (res.status === 'fulfilled') {
+        succeededIds.push(ids[i]);
+      } else {
+        hasFail = true;
       }
-    } finally {
-      setLoading(false);
-      // вернуть фокус после скрытия оверлея
-      setTimeout(() => inputRef.current?.focus(), 0);
+    });
+
+    if (succeededIds.length) {
+      setTodos(prev => prev.filter(t => !succeededIds.includes(t.id)));
     }
+
+    if (hasFail) {
+      showError('Unable to delete a todo');
+    }
+
+    setSavingIds(prev => prev.filter(id => !ids.includes(id)));
+
+    inputRef.current?.focus();
   };
 
   return (
@@ -309,7 +312,7 @@ export const App: React.FC = () => {
           hasTodos={hasTodos}
           allCompleted={allCompleted}
           onToggleAll={handleToggleAll}
-          onAddTodo={handleAddTodo} // Promise<boolean>
+          onAddTodo={handleAddTodo}
           inputRef={inputRef}
           disabled={!!tempTodo}
         />
@@ -321,7 +324,7 @@ export const App: React.FC = () => {
               savingIds={savingIds}
               onToggleTodo={handleToggleTodo}
               onRemoveTodo={handleRemoveTodo}
-              onUpdateTitle={handleUpdateTitle} // Promise<boolean>
+              onUpdateTitle={handleUpdateTitle}
               tempTodoId={tempTodo ? 0 : null}
             />
 
